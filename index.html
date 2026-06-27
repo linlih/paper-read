@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Paper Commons - 论文阅读</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell" id="appShell">
+      <aside class="sidebar" id="librarySidebar" aria-label="论文库">
+        <div class="brand">
+          <div>
+            <div class="brand-name">Paper Commons</div>
+            <div class="brand-note">只保留阅读、标注、笔记</div>
+          </div>
+          <button class="ghost-button sidebar-close" type="button" data-sidebar-toggle>收起</button>
+        </div>
+
+        <form class="import-form" id="importForm">
+          <label for="paperInput">添加论文</label>
+          <div class="input-row">
+            <input
+              id="paperInput"
+              name="paperInput"
+              type="text"
+              autocomplete="off"
+              placeholder="arXiv / DOI / PDF URL"
+            />
+            <button type="submit" class="icon-button" aria-label="添加">+</button>
+          </div>
+          <div class="file-row">
+            <label class="file-button" for="pdfUpload">上传 PDF</label>
+            <input id="pdfUpload" type="file" accept="application/pdf" />
+          </div>
+        </form>
+
+        <nav class="paper-list" id="paperList" aria-label="已导入论文"></nav>
+      </aside>
+
+      <main class="main">
+        <button
+          class="library-toggle"
+          id="sidebarToggle"
+          type="button"
+          aria-controls="librarySidebar"
+          aria-expanded="false"
+          data-sidebar-toggle
+        >
+          论文库
+        </button>
+        <section id="workspace" class="workspace" aria-live="polite"></section>
+      </main>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
