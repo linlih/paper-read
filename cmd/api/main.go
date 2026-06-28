@@ -6,8 +6,10 @@ import (
 	"log"
 	"mime"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	annotationapp "paper-reading/internal/annotation/application"
@@ -127,7 +129,12 @@ func registerAPI(
 			transport.WriteError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		transport.WriteJSON(w, http.StatusOK, map[string]any{"translation": "【译文】" + body.Text})
+		translation, err := translateText(body.Text, body.TargetLang)
+		if err != nil {
+			transport.WriteError(w, http.StatusBadGateway, err.Error())
+			return
+		}
+		transport.WriteJSON(w, http.StatusOK, map[string]any{"translation": translation})
 	})
 	mux.HandleFunc("GET /api/admin/users", func(w http.ResponseWriter, r *http.Request) {
 		if _, ok := requireAdmin(w, r, userService); !ok {
@@ -377,6 +384,68 @@ func env(key string, fallback string) string {
 
 func hasPrefix(value string, prefix string) bool {
 	return len(value) >= len(prefix) && value[:len(prefix)] == prefix
+}
+
+func translateText(text string, targetLang string) (string, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", errBadTranslationInput("text is required")
+	}
+	targetLang = strings.TrimSpace(targetLang)
+	if targetLang == "" {
+		targetLang = "zh-CN"
+	}
+	values := url.Values{}
+	values.Set("client", "gtx")
+	values.Set("sl", "auto")
+	values.Set("tl", targetLang)
+	values.Set("dt", "t")
+	values.Set("q", text)
+
+	client := &http.Client{Timeout: 12 * time.Second}
+	response, err := client.Get("https://translate.googleapis.com/translate_a/single?" + values.Encode())
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return "", errBadTranslationInput("translation service returned " + response.Status)
+	}
+
+	var payload any
+	if err := json.NewDecoder(io.LimitReader(response.Body, 2<<20)).Decode(&payload); err != nil {
+		return "", err
+	}
+	segments, ok := payload.([]any)
+	if !ok || len(segments) == 0 {
+		return "", errBadTranslationInput("translation service returned an unexpected response")
+	}
+	chunks, ok := segments[0].([]any)
+	if !ok {
+		return "", errBadTranslationInput("translation service returned an unexpected response")
+	}
+	var builder strings.Builder
+	for _, chunk := range chunks {
+		values, ok := chunk.([]any)
+		if !ok || len(values) == 0 {
+			continue
+		}
+		part, ok := values[0].(string)
+		if ok {
+			builder.WriteString(part)
+		}
+	}
+	translation := strings.TrimSpace(builder.String())
+	if translation == "" {
+		return "", errBadTranslationInput("translation service returned an empty response")
+	}
+	return translation, nil
+}
+
+type errBadTranslationInput string
+
+func (e errBadTranslationInput) Error() string {
+	return string(e)
 }
 
 func startMinerUSyncLoop(service *ingestionapp.Service) {

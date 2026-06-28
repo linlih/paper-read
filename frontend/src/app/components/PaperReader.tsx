@@ -61,6 +61,12 @@ const UNDERLINE_COLORS = [
 
 function generateId() { return Math.random().toString(36).slice(2, 11); }
 
+function cleanTranslationText(value: string): string {
+  return value
+    .replace(/^\s*[【\[]\s*(译文|翻译|translation)\s*[】\]]\s*[:：]?\s*/i, '')
+    .trim();
+}
+
 function applyAnnotationsToHTML(html: string, annotations: Annotation[]): string {
   let result = html;
   annotations.forEach(ann => {
@@ -282,9 +288,9 @@ export function PaperReader({
 
     const translated = await api<{ translation: string }>('/api/translate', {
       method: 'POST',
-      body: JSON.stringify({ text, target_lang: lang === 'zh' ? 'zh' : 'en' }),
+      body: JSON.stringify({ text, target_lang: 'zh-CN' }),
     });
-    const result = translated.translation;
+    const result = cleanTranslationText(translated.translation);
     setTranslating(false);
     setTranslationText(result);
 
