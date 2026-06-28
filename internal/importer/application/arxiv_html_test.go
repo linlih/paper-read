@@ -39,6 +39,42 @@ func TestImportArxivHTMLCreatesCanonicalHTMLVersion(t *testing.T) {
 	}
 }
 
+func TestImportArxivHTMLExcludesArxivPageChrome(t *testing.T) {
+	t.Parallel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/html/2401.00004v1" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("content-type", "text/html")
+		_, _ = w.Write([]byte(`<html><body>
+<div class="modal"><h5 id="modal-title">Report GitHub Issue</h5></div>
+<header><img src="/static/arxiv-logo.svg" alt="arXiv logo"></header>
+<ol class="ltx_toclist"><li>1 Introduction</li></ol>
+<article class="ltx_document"><h1>Clean Paper</h1><p>Paper body.</p></article>
+<footer><h2>Instructions for reporting errors</h2></footer>
+</body></html>`))
+	}))
+	defer server.Close()
+
+	service := newTestImporterService(t, server.URL)
+	result, err := service.ImportArxivHTML("2401.00004v1", "usr_test")
+	if err != nil {
+		t.Fatalf("ImportArxivHTML returned error: %v", err)
+	}
+	for _, unexpected := range []string{"Report GitHub Issue", "arXiv logo", "ltx_toclist", "Instructions for reporting errors"} {
+		if strings.Contains(result.Version.CanonicalHTML, unexpected) {
+			t.Fatalf("arxiv page chrome %q survived in canonical html: %s", unexpected, result.Version.CanonicalHTML)
+		}
+	}
+	if !strings.Contains(result.Version.CanonicalHTML, "Clean Paper") || !strings.Contains(result.Version.CanonicalHTML, "Paper body.") {
+		t.Fatalf("paper article content missing: %s", result.Version.CanonicalHTML)
+	}
+	if len(result.Blocks) != 2 {
+		t.Fatalf("expected only article heading and paragraph blocks, got %d: %#v", len(result.Blocks), result.Blocks)
+	}
+}
+
 func TestImportArxivHTMLRewritesRelativeImageSources(t *testing.T) {
 	t.Parallel()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

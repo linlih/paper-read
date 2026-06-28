@@ -67,7 +67,10 @@ func (s *Service) ImportArxivHTML(arxivID string, uploadedBy string) (ImportResu
 	}
 	rawHTML := string(data)
 	rawHTML = documentapp.RewriteArxivImageSources(rawHTML, s.baseURL, arxivID)
-	canonicalHTML := documentapp.SanitizeHTML(rawHTML, documentapp.AssetPolicy{AllowRemoteImages: true})
+	articleHTML := documentapp.ExtractMainArticle(rawHTML)
+	articleHTML = documentapp.StripArxivAttributionNotice(articleHTML)
+	articleHTML = documentapp.NormalizeArxivFrontMatter(articleHTML)
+	canonicalHTML := documentapp.SanitizeHTML(articleHTML, documentapp.AssetPolicy{AllowRemoteImages: true})
 	if strings.TrimSpace(canonicalHTML) == "" {
 		return ImportResult{}, errors.New("arXiv HTML did not contain readable content")
 	}

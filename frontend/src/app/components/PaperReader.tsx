@@ -114,6 +114,14 @@ interface SelectionState {
   target: SelectionTarget | null;
 }
 
+interface ReferenceJumpState {
+  sourceScrollTop: number;
+  sourceToken: string;
+  sourceLabel: string;
+  sourceHash: string;
+  targetHash: string;
+}
+
 export function PaperReader({
   paper, readerPayload, annotations, currentUser, onBack,
   onSaveAnnotation, onDeleteAnnotation, onUpdateAnnotation,
@@ -160,6 +168,8 @@ export function PaperReader({
   const [inlineNoteAnnId, setInlineNoteAnnId] = useState<string | null>(null);
   const [inlineNoteText, setInlineNoteText] = useState('');
   const [imagePreview, setImagePreview] = useState<ImagePreviewSource | null>(null);
+  const [referenceJump, setReferenceJump] = useState<ReferenceJumpState | null>(null);
+  const referenceJumpCounterRef = useRef(0);
 
   const paperAnnotations = annotations.filter(a => (a.paperId || a.paper_id) === paper.id);
   const blocks = readerPayload?.blocks ?? [];
@@ -384,8 +394,105 @@ export function PaperReader({
   }
 
   // Click on annotated text in paper → expand that item in sidebar
+  function clearReferenceJumpMarkers() {
+    if (!contentRef.current) return;
+    contentRef.current.querySelectorAll('.ref-jump-origin, .ref-jump-target').forEach(node => {
+      node.classList.remove('ref-jump-origin', 'ref-jump-target');
+      node.removeAttribute('data-ref-jump-origin');
+    });
+  }
+
+  function findHashTarget(hash: string): HTMLElement | null {
+    if (!hash.startsWith('#') || !contentRef.current) return null;
+    const rawId = hash.slice(1);
+    if (!rawId) return null;
+    const ids = [rawId];
+    try {
+      const decoded = decodeURIComponent(rawId);
+      if (decoded !== rawId) ids.push(decoded);
+    } catch {
+      // Keep the raw hash id when decoding fails.
+    }
+    for (const id of ids) {
+      const target = document.getElementById(id);
+      if (target instanceof HTMLElement && contentRef.current.contains(target)) return target;
+    }
+    return null;
+  }
+
+  function scrollElementIntoReader(element: HTMLElement) {
+    const scroller = scrollerRef.current;
+    if (!scroller) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    const scrollerRect = scroller.getBoundingClientRect();
+    const elementRect = element.getBoundingClientRect();
+    const elementTop = elementRect.top - scrollerRect.top + scroller.scrollTop;
+    const targetTop = elementTop - scroller.clientHeight / 2 + elementRect.height / 2;
+    scroller.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
+  }
+
+  function handleReferenceJumpClick(e: React.MouseEvent, link: HTMLAnchorElement): boolean {
+    const hash = link.getAttribute('href') || '';
+    const target = findHashTarget(hash);
+    if (!target) return false;
+
+    e.preventDefault();
+    e.stopPropagation();
+    window.getSelection()?.removeAllRanges();
+    setSelection(null);
+
+    clearReferenceJumpMarkers();
+
+    const sourceToken = `ref-origin-${Date.now()}-${referenceJumpCounterRef.current++}`;
+    const sourceText = link.textContent?.trim() || '';
+    const sourceLabel = sourceText.startsWith('[') ? sourceText : `[${sourceText || 'ref'}]`;
+    const sourceElement = link.closest('[id]') as HTMLElement | null;
+    const sourceHash = sourceElement?.id ? `#${sourceElement.id}` : window.location.hash;
+    const sourceScrollTop = scrollerRef.current?.scrollTop ?? window.scrollY;
+
+    link.classList.add('ref-jump-origin');
+    link.setAttribute('data-ref-jump-origin', sourceToken);
+    target.classList.add('ref-jump-target');
+
+    setReferenceJump({
+      sourceScrollTop,
+      sourceToken,
+      sourceLabel,
+      sourceHash,
+      targetHash: hash,
+    });
+
+    window.history.pushState(null, '', hash);
+    window.requestAnimationFrame(() => {
+      scrollElementIntoReader(target);
+    });
+    return true;
+  }
+
+  function returnToReferenceJump() {
+    if (!referenceJump) return;
+    const source = contentRef.current?.querySelector(`[data-ref-jump-origin="${referenceJump.sourceToken}"]`) as HTMLElement | null;
+    if (source) {
+      scrollElementIntoReader(source);
+      source.classList.add('ref-jump-origin');
+    } else if (scrollerRef.current) {
+      scrollerRef.current.scrollTo({ top: referenceJump.sourceScrollTop, behavior: 'smooth' });
+    } else {
+      window.scrollTo({ top: referenceJump.sourceScrollTop, behavior: 'smooth' });
+    }
+    if (referenceJump.sourceHash) {
+      window.history.pushState(null, '', referenceJump.sourceHash);
+    }
+    setReferenceJump(null);
+  }
+
   function handleContentClick(e: React.MouseEvent) {
-    const target = e.target as HTMLElement;
+    const target = e.target as Element;
+    const link = target.closest('a[href^="#"]') as HTMLAnchorElement | null;
+    if (link && contentRef.current?.contains(link) && handleReferenceJumpClick(e, link)) return;
+
     const annId = target.getAttribute('data-ann-id') || target.closest('[data-ann-id]')?.getAttribute('data-ann-id');
     if (!annId) return;
     const ann = paperAnnotations.find(a => a.id === annId);
@@ -438,6 +545,11 @@ export function PaperReader({
   }
 
   useEffect(() => { setEditContent(paper.htmlContent || ''); }, [paper.htmlContent]);
+
+  useEffect(() => {
+    setReferenceJump(null);
+    clearReferenceJumpMarkers();
+  }, [paper.id]);
 
 
   // Shared recalculation — walks all [data-ann-id] elements for position + geometry
@@ -757,7 +869,7 @@ export function PaperReader({
                 {selection && selection.action === 'menu' && (
                   <div
                     className="popup-panel absolute z-40 flex flex-nowrap items-center gap-0.5 px-1.5 py-1 rounded-xl bg-[#1E1C1A] shadow-xl border border-[#F7F3EE]/10 w-max max-w-[calc(100vw-1rem)] overflow-x-auto"
-                    style={{ left: selectionPopupLeft(selection.x, contentRef.current?.offsetWidth ?? 600), top: selection.y - 46, transform: 'translateX(-50%)' }}
+                    style={{ left: selectionPopupLeft(selection.x, contentRef.current?.offsetWidth ?? 600), top: Math.max(8, selection.y - 46), transform: 'translateX(-50%)' }}
                     onMouseDown={e => e.preventDefault()}
                     onMouseUp={e => e.stopPropagation()}
                   >
@@ -830,7 +942,7 @@ export function PaperReader({
                 {selection && selection.action === 'translate' && (
                   <div
                     className="popup-panel absolute z-40 w-72 bg-[#FDFAF6] border border-[#1E1C1A]/12 rounded-2xl shadow-2xl p-4"
-                    style={{ left: Math.min(selection.x, (contentRef.current?.offsetWidth ?? 600) - 300), top: selection.y - 10, transform: 'translateY(-100%)' }}
+                    style={{ left: Math.min(selection.x, (contentRef.current?.offsetWidth ?? 600) - 300), top: selection.y < 180 ? selection.y + 24 : selection.y - 10, transform: selection.y < 180 ? 'none' : 'translateY(-100%)' }}
                     onMouseDown={e => e.preventDefault()}
                     onMouseUp={e => e.stopPropagation()}
                   >
@@ -858,7 +970,7 @@ export function PaperReader({
                 {selection && selection.action === 'note' && (
                   <div
                     className="popup-panel absolute z-40 w-72 bg-[#FDFAF6] border border-[#1E1C1A]/12 rounded-2xl shadow-2xl p-4"
-                    style={{ left: Math.min(selection.x, (contentRef.current?.offsetWidth ?? 600) - 300), top: selection.y - 10, transform: 'translateY(-100%)' }}
+                    style={{ left: Math.min(selection.x, (contentRef.current?.offsetWidth ?? 600) - 300), top: selection.y < 180 ? selection.y + 24 : selection.y - 10, transform: selection.y < 180 ? 'none' : 'translateY(-100%)' }}
                     onMouseDown={e => e.stopPropagation()}
                     onMouseUp={e => e.stopPropagation()}
                   >
@@ -1050,6 +1162,19 @@ export function PaperReader({
         </div>
       )}
 
+      {referenceJump && !editMode && (
+        <button
+          type="button"
+          onClick={returnToReferenceJump}
+          title={`Return from ${referenceJump.targetHash}`}
+          aria-label={`返回引用 ${referenceJump.sourceLabel}`}
+          className="fixed left-1/2 bottom-5 z-50 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-[#3B3094]/25 bg-[#FDFAF6] px-3 py-2 text-xs text-[#33268D] shadow-lg shadow-[#1E1C1A]/10 hover:border-[#3B3094]/45 hover:bg-white transition-colors"
+        >
+          <ArrowLeft size={14} />
+          <span>返回引用 {referenceJump.sourceLabel}</span>
+        </button>
+      )}
+
       {imagePreview && (
         <div className={imagePreviewOverlayClassName()} onClick={() => setImagePreview(null)} role="dialog" aria-modal="true" aria-label={imagePreview.alt}>
           <button
@@ -1075,22 +1200,300 @@ export function PaperReader({
         .paper-body h1 { font-size: 1.75rem; font-weight: 700; line-height: 1.25; color: #1E1C1A; margin-bottom: 0.75rem; font-family: var(--paper-font); }
         .paper-body .authors { color: #3B3094; font-size: 0.9375rem; margin-bottom: 0.25rem; font-family: var(--ui-font); }
         .paper-body .venue { color: #7A7165; font-size: 0.875rem; margin-bottom: 2rem; font-family: var(--ui-font); font-style: italic; }
+        .paper-body .ltx_frontmatter {
+          max-width: 44rem;
+          margin: 0.15rem auto 0;
+          color: #6F665C;
+          font-family: var(--ui-font);
+          font-size: 0.875rem;
+          line-height: 1.45;
+          text-align: center;
+          hyphens: none;
+        }
+        .paper-body .ltx_frontmatter + .ltx_frontmatter {
+          margin-top: 0.25rem;
+        }
+        .paper-body .ltx_authors {
+          color: #3B3094;
+          font-weight: 500;
+        }
+        .paper-body .ltx_affiliations {
+          font-size: 0.8125rem;
+          color: #7A7165;
+        }
+        .paper-body .paper-block:has(.ltx_frontmatter) {
+          margin-bottom: 0;
+        }
+        .paper-body .paper-block:has(.ltx_frontmatter) + .paper-block:has(.ltx_title_abstract) {
+          margin-top: 1.35rem;
+        }
         .paper-body section { margin-bottom: 2rem; }
         .paper-body h2 { font-size: 1.25rem; font-weight: 700; color: #1E1C1A; margin: 1.75rem 0 0.75rem; font-family: var(--paper-font); border-bottom: 1px solid rgba(30,28,26,0.1); padding-bottom: 0.4rem; }
         .paper-body h3 { font-size: 1.0625rem; font-weight: 700; color: #1E1C1A; margin: 1.25rem 0 0.5rem; font-family: var(--paper-font); }
+        .paper-body h6.ltx_title_abstract {
+          font-size: 1.25rem;
+          font-weight: 700;
+          color: #1E1C1A;
+          margin: 1.5rem 0 0.75rem;
+          font-family: var(--paper-font);
+          border-bottom: 1px solid rgba(30,28,26,0.1);
+          padding-bottom: 0.4rem;
+        }
         .paper-body p { margin-bottom: 1.1rem; text-align: justify; hyphens: auto; }
+        .paper-body .paper-block-list {
+          margin: 0.55rem 0 0.85rem;
+        }
+        .paper-body li.ltx_item {
+          display: grid;
+          grid-template-columns: max-content minmax(0, 1fr);
+          column-gap: 0.45rem;
+          align-items: baseline;
+          list-style: none;
+          margin: 0;
+          padding: 0;
+        }
+        .paper-body li.ltx_item > .ltx_tag_item {
+          grid-column: 1;
+          grid-row: 1;
+          color: #1E1C1A;
+          white-space: nowrap;
+        }
+        .paper-body li.ltx_item > p {
+          grid-column: 2;
+          margin: 0;
+          min-width: 0;
+          text-align: justify;
+        }
+        .paper-body li.ltx_item > p + p {
+          grid-column: 2;
+          margin-top: 0.55rem;
+        }
+        .paper-body a {
+          color: #3B3094;
+          font-weight: inherit;
+          text-decoration: underline;
+          text-decoration-color: rgba(59, 48, 148, 0.35);
+          text-decoration-thickness: 0.06em;
+          text-underline-offset: 0.15em;
+          transition: color 0.15s ease, background-color 0.15s ease, text-decoration-color 0.15s ease;
+        }
+        .paper-body a:hover,
+        .paper-body a:focus-visible {
+          color: #24156F;
+          text-decoration-color: rgba(36, 21, 111, 0.7);
+        }
+        .paper-body a.ltx_ref[href^="#bib"] {
+          display: inline-block;
+          min-width: 1.15em;
+          margin: 0 0.02em;
+          padding: 0 0.16em;
+          border: 1px solid rgba(59, 48, 148, 0.16);
+          border-radius: 3px;
+          background: rgba(59, 48, 148, 0.12);
+          color: #33268D;
+          font-family: var(--ui-font);
+          font-size: 0.92em;
+          font-weight: 400;
+          line-height: 1.25;
+          text-align: center;
+          text-decoration: none;
+          vertical-align: 0.04em;
+        }
+        .paper-body a.ltx_ref[href^="#bib"]:hover,
+        .paper-body a.ltx_ref[href^="#bib"]:focus-visible {
+          border-color: rgba(59, 48, 148, 0.32);
+          background: rgba(59, 48, 148, 0.18);
+          color: #24156F;
+        }
+        .paper-body .ltx_role_refnum {
+          display: inline-block;
+          min-width: 1.7em;
+          margin-right: 0.18em;
+          padding: 0 0.18em;
+          border: 1px solid rgba(59, 48, 148, 0.16);
+          border-radius: 3px;
+          background: rgba(59, 48, 148, 0.12);
+          color: #33268D;
+          font-family: var(--ui-font);
+          font-size: 0.92em;
+          font-weight: 400;
+          line-height: 1.25;
+          text-align: center;
+        }
+        .paper-body .ltx_bibitem:target .ltx_role_refnum {
+          border-color: rgba(59, 48, 148, 0.32);
+          background: rgba(59, 48, 148, 0.18);
+          color: #24156F;
+        }
+        .paper-body .ref-jump-origin {
+          border-color: rgba(59, 48, 148, 0.52) !important;
+          background: rgba(59, 48, 148, 0.2) !important;
+          box-shadow: 0 0 0 2px rgba(59, 48, 148, 0.12);
+        }
+        .paper-body .ref-jump-target {
+          scroll-margin-top: 5rem;
+          border-radius: 4px;
+          outline: 2px solid rgba(59, 48, 148, 0.22);
+          outline-offset: 4px;
+          background: rgba(59, 48, 148, 0.045);
+        }
+        .paper-body .ltx_bibitem.ref-jump-target {
+          padding: 0.15rem 0.35rem 0.2rem;
+          margin-left: -0.35rem;
+          margin-right: -0.35rem;
+        }
         .paper-body img, .paper-body svg, .paper-body canvas, .paper-body video { max-width: 100% !important; height: auto !important; }
-        .paper-body figure { max-width: 100%; margin-left: 0; margin-right: 0; overflow-x: hidden; }
-        .paper-body figcaption { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
+        .paper-body figure { max-width: 100%; margin: 1.5rem 0; overflow-x: hidden; }
+        .paper-body figcaption {
+          max-width: 100%;
+          margin: 0.65rem auto 0;
+          color: #5F574E;
+          font-family: var(--ui-font);
+          font-size: 0.875rem;
+          line-height: 1.55;
+          text-align: center;
+          overflow-wrap: anywhere;
+          word-break: break-word;
+        }
+        .paper-body figcaption .ltx_tag_figure { font-weight: 600; color: #3B3094; }
+        .paper-body figure.ltx_figure > p.ltx_align_center {
+          margin: 0.4rem 0 0;
+          color: #5F574E;
+          font-family: var(--ui-font);
+          font-size: 0.8125rem;
+          line-height: 1.35;
+          text-align: center;
+        }
+        .paper-body figure.ltx_figure:has(> img:nth-of-type(2)) {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          column-gap: 1.5rem;
+          row-gap: 0.4rem;
+          align-items: end;
+        }
+        .paper-body figure.ltx_figure:has(> img:nth-of-type(2)) > img {
+          width: auto !important;
+          max-width: 100% !important;
+          max-height: 32rem;
+          justify-self: center;
+          object-fit: contain;
+        }
+        .paper-body figure.ltx_figure:has(> img:nth-of-type(2)) > img:nth-of-type(1) { grid-column: 1; grid-row: 1; }
+        .paper-body figure.ltx_figure:has(> img:nth-of-type(2)) > img:nth-of-type(2) { grid-column: 2; grid-row: 1; }
+        .paper-body figure.ltx_figure:has(> img:nth-of-type(2)) > p.ltx_align_center:nth-of-type(1) { grid-column: 1; grid-row: 2; }
+        .paper-body figure.ltx_figure:has(> img:nth-of-type(2)) > p.ltx_align_center:nth-of-type(2) { grid-column: 2; grid-row: 2; }
+        .paper-body figure.ltx_figure:has(> img:nth-of-type(2)) > figcaption {
+          grid-column: 1 / -1;
+          grid-row: 3;
+          max-width: 42rem;
+        }
+        .paper-body figure.ltx_table {
+          max-width: 100%;
+          margin: 1.75rem auto;
+          overflow-x: auto;
+          overflow-y: hidden;
+        }
+        .paper-body figure.ltx_table > figcaption {
+          max-width: 44rem;
+          margin: 0 auto 0.8rem;
+          color: #5F574E;
+          font-family: var(--ui-font);
+          font-size: 0.875rem;
+          line-height: 1.55;
+          text-align: center;
+        }
+        .paper-body figure.ltx_table > figcaption .ltx_tag_table {
+          font-weight: 600;
+          color: #3B3094;
+        }
         .paper-body table { width: 100% !important; max-width: 100%; table-layout: fixed; border-collapse: collapse; }
         .paper-body th, .paper-body td { max-width: 100%; overflow-wrap: anywhere; word-break: break-word; vertical-align: top; }
+        .paper-body table.ltx_tabular {
+          width: auto !important;
+          min-width: min(100%, 34rem);
+          max-width: 100%;
+          margin: 0.4rem auto 0;
+          table-layout: auto;
+          border-collapse: collapse;
+          font-size: 0.95rem;
+          line-height: 1.45;
+        }
+        .paper-body table.ltx_tabular th,
+        .paper-body table.ltx_tabular td {
+          padding: 0.38rem 0.85rem;
+          vertical-align: middle;
+          overflow-wrap: normal;
+          word-break: normal;
+        }
+        .paper-body table.ltx_tabular .ltx_align_center { text-align: center; }
+        .paper-body table.ltx_tabular .ltx_align_left { text-align: left; }
+        .paper-body table.ltx_tabular .ltx_th {
+          font-weight: 650;
+          color: #1E1C1A;
+        }
+        .paper-body table.ltx_tabular thead .ltx_th {
+          font-family: var(--ui-font);
+          font-size: 0.875rem;
+          letter-spacing: 0;
+        }
+        .paper-body table.ltx_tabular .ltx_th_row {
+          white-space: normal;
+        }
+        .paper-body table.ltx_tabular .ltx_border_tt {
+          border-top: 2px solid rgba(30, 28, 26, 0.72);
+        }
+        .paper-body table.ltx_tabular .ltx_border_t {
+          border-top: 1px solid rgba(30, 28, 26, 0.5);
+        }
+        .paper-body table.ltx_tabular .ltx_border_bb {
+          border-bottom: 2px solid rgba(30, 28, 26, 0.72);
+        }
+        .paper-body table.ltx_tabular .ltx_border_b {
+          border-bottom: 1px solid rgba(30, 28, 26, 0.5);
+        }
+        .paper-body table.ltx_tabular tbody tr + tr th,
+        .paper-body table.ltx_tabular tbody tr + tr td {
+          border-top: 1px solid rgba(30, 28, 26, 0.08);
+        }
+        .paper-body table.ltx_tabular math {
+          white-space: nowrap;
+        }
+        .paper-body table.ltx_equation {
+          table-layout: auto !important;
+          width: 100% !important;
+          margin: 1rem 0;
+        }
+        .paper-body table.ltx_equation td {
+          vertical-align: middle;
+          overflow-wrap: normal;
+          word-break: normal;
+        }
+        .paper-body table.ltx_equation .ltx_eqn_center_padleft,
+        .paper-body table.ltx_equation .ltx_eqn_center_padright {
+          width: 1%;
+          padding: 0;
+        }
+        .paper-body table.ltx_equation .ltx_align_center {
+          text-align: center;
+        }
+        .paper-body table.ltx_equation .ltx_eqn_eqno {
+          width: 3rem;
+          text-align: right;
+          white-space: nowrap;
+        }
+        .paper-body table.ltx_equation math[display="block"] {
+          display: inline-block;
+          width: auto;
+          max-width: none;
+          margin: 0;
+          padding: 0;
+          overflow-x: visible;
+        }
         .paper-body pre, .paper-body code { max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; overflow-x: hidden; }
         .paper-body .ltx_inline-block,
         .paper-body .ltx_foreignobject_container,
         .paper-body .ltx_foreignobject_content,
         .paper-body .ltx_picture,
-        .paper-body .ltx_tabular,
-        .paper-body .ltx_table,
         .paper-body .ltx_figure { max-width: 100% !important; overflow-x: hidden; overflow-wrap: anywhere; word-break: break-word; }
         @media (max-width: 767px) {
           .paper-body { font-size: 1rem; line-height: 1.75; }
@@ -1106,6 +1509,39 @@ export function PaperReader({
           .paper-body tr { border-bottom: 1px solid rgba(30,28,26,0.12); padding: 0.35rem 0; }
           .paper-body th,
           .paper-body td { padding: 0.25rem 0; }
+          .paper-body figure.ltx_table {
+            overflow-x: auto;
+            padding-bottom: 0.35rem;
+          }
+          .paper-body figure.ltx_table table.ltx_tabular {
+            min-width: 34rem;
+          }
+          .paper-body figure.ltx_table table.ltx_tabular,
+          .paper-body figure.ltx_table table.ltx_tabular thead,
+          .paper-body figure.ltx_table table.ltx_tabular tbody,
+          .paper-body figure.ltx_table table.ltx_tabular tr {
+            display: table;
+          }
+          .paper-body figure.ltx_table table.ltx_tabular thead { display: table-header-group; }
+          .paper-body figure.ltx_table table.ltx_tabular tbody { display: table-row-group; }
+          .paper-body figure.ltx_table table.ltx_tabular tr { display: table-row; border-bottom: 0; padding: 0; }
+          .paper-body figure.ltx_table table.ltx_tabular th,
+          .paper-body figure.ltx_table table.ltx_tabular td {
+            display: table-cell;
+            width: auto !important;
+            padding: 0.35rem 0.75rem;
+          }
+          .paper-body figure.ltx_figure:has(> img:nth-of-type(2)) {
+            display: block;
+          }
+          .paper-body figure.ltx_figure:has(> img:nth-of-type(2)) > img {
+            display: block;
+            max-height: none;
+            margin: 0.75rem auto 0;
+          }
+          .paper-body figure.ltx_figure:has(> img:nth-of-type(2)) > p.ltx_align_center {
+            margin-bottom: 0.75rem;
+          }
         }
         .paper-body em { font-style: italic; }
         .paper-body strong { font-weight: 700; }
@@ -1114,6 +1550,21 @@ export function PaperReader({
         .paper-body mark:hover { opacity: 0.75; }
         .paper-body [data-ann-id] { cursor: pointer; }
         .paper-body [data-ann-id]:hover { opacity: 0.75; }
+        .paper-body math {
+          max-width: 100%;
+          font-family: "Cambria Math", "STIX Two Math", "Times New Roman", serif;
+          font-size: 1em;
+          color: #1E1C1A;
+          vertical-align: baseline;
+        }
+        .paper-body math[display="block"] {
+          display: block;
+          width: fit-content;
+          max-width: 100%;
+          margin: 0.75rem auto;
+          padding: 0.35rem 0;
+          overflow-x: auto;
+        }
         ::selection { background: rgba(59, 48, 148, 0.15); }
       `}</style>
     </div>
