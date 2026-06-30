@@ -7,6 +7,7 @@ import {
 import type { Paper, Annotation, User, ChatMessage, ReaderPayload, DocumentBlock, AnnotationTarget } from './types';
 import type { T, Lang } from './i18n';
 import { AIChatSidebar } from './AIChatSidebar';
+import { PdfReader } from './PdfReader';
 import { api } from '../lib/api';
 import { applyAnnotationToBlockHTML } from '../lib/annotationRender';
 import {
@@ -111,6 +112,7 @@ function normalizeAnnotation(annotation: Annotation, targets: AnnotationTarget[]
 }
 
 type PopupAction = 'menu' | 'translate' | 'note';
+type ReaderMode = 'html' | 'pdf';
 
 interface SelectionState {
   x: number;
@@ -137,6 +139,9 @@ export function PaperReader({
   const [activeUnderlineColor, setActiveUnderlineColor] = useState(UNDERLINE_COLORS[0]);
   const [popupColorPicker, setPopupColorPicker] = useState<'highlight' | 'underline' | null>(null);
   const [selection, setSelection] = useState<SelectionState | null>(null);
+  const hasPdfSource = paper.source_type === 'pdf' || paper.source === 'pdf' || Boolean(paper.pdf_url);
+  const pdfSourceUrl = paper.pdf_url || `/api/papers/${encodeURIComponent(paper.id)}/source-file`;
+  const [readerMode, setReaderMode] = useState<ReaderMode>(() => hasPdfSource && !paper.htmlContent ? 'pdf' : 'html');
 
   // Translation state — purely display, never auto-creates an annotation
   const [translationText, setTranslationText] = useState('');
@@ -182,6 +187,7 @@ export function PaperReader({
   const renderedHTML = applyAnnotationsToHTML(paper.htmlContent || '', paperAnnotations);
 
   const captureSelectionFromDOM = useCallback((eventTarget?: EventTarget | null) => {
+    if (readerMode !== 'html') return;
     // Don't interfere when a panel is active — let it handle its own events
     if (eventTarget instanceof HTMLElement && eventTarget.closest('.popup-panel')) return;
     const sel = window.getSelection();
@@ -205,7 +211,7 @@ export function PaperReader({
       const target = contentRef.current ? selectionToTarget(contentRef.current) : null;
       return { x: rect.left + rect.width / 2 - containerRect.left, y: rect.top - containerRect.top - 8, text, action: 'menu', target };
     });
-  }, []);
+  }, [readerMode]);
 
   const handleMouseUp = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     captureSelectionFromDOM(e.target);
@@ -497,7 +503,7 @@ export function PaperReader({
   function handleContentClick(e: React.MouseEvent) {
     const target = e.target as Element;
     const link = target.closest('a[href^="#"]') as HTMLAnchorElement | null;
-    if (link && contentRef.current?.contains(link) && handleReferenceJumpClick(e, link)) return;
+    if (readerMode === 'html' && link && contentRef.current?.contains(link) && handleReferenceJumpClick(e, link)) return;
 
     const annId = target.getAttribute('data-ann-id') || target.closest('[data-ann-id]')?.getAttribute('data-ann-id');
     if (!annId) return;
@@ -514,6 +520,14 @@ export function PaperReader({
   function openAIWithSelection() {
     if (!selection) return;
     setPendingSelectedText(selection.text);
+    setChatOpen(true);
+    window.getSelection()?.removeAllRanges();
+    setSelection(null);
+  }
+
+  function openAIWithText(text: string) {
+    if (!text) return;
+    setPendingSelectedText(text);
     setChatOpen(true);
     window.getSelection()?.removeAllRanges();
     setSelection(null);
@@ -551,6 +565,12 @@ export function PaperReader({
   }
 
   useEffect(() => { setEditContent(paper.htmlContent || ''); }, [paper.htmlContent]);
+
+  useEffect(() => {
+    setReaderMode(hasPdfSource && !paper.htmlContent ? 'pdf' : 'html');
+    setSelection(null);
+    setEditMode(false);
+  }, [paper.id, hasPdfSource, paper.htmlContent]);
 
   useEffect(() => {
     setReferenceJump(null);
@@ -644,7 +664,25 @@ export function PaperReader({
               <ExternalLink size={12} />arXiv
             </a>
           )}
-          {canEdit && !editMode && (
+          {hasPdfSource && (
+            <div className="hidden sm:flex items-center gap-0.5 rounded bg-[#F7F3EE]/10 p-0.5">
+              <button
+                type="button"
+                onClick={() => setReaderMode('html')}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors ${readerMode === 'html' ? 'bg-[#F7F3EE] text-[#1E1C1A]' : 'text-[#F7F3EE]/70 hover:text-[#F7F3EE]'}`}
+              >
+                <BookOpen size={12} />HTML
+              </button>
+              <button
+                type="button"
+                onClick={() => { setReaderMode('pdf'); setEditMode(false); }}
+                className={`flex items-center gap-1 px-2 py-0.5 rounded text-xs transition-colors ${readerMode === 'pdf' ? 'bg-[#F7F3EE] text-[#1E1C1A]' : 'text-[#F7F3EE]/70 hover:text-[#F7F3EE]'}`}
+              >
+                PDF
+              </button>
+            </div>
+          )}
+          {canEdit && !editMode && readerMode === 'html' && (
             <button onClick={() => setEditMode(true)} className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs bg-[#F7F3EE]/10 hover:bg-[#F7F3EE]/20 text-[#F7F3EE]/80 transition-colors">
               <Edit3 size={12} />{t.editHtml}
             </button>
@@ -855,8 +893,12 @@ export function PaperReader({
         )}
 
         {/* Paper content */}
-        <div ref={scrollerRef} className={paperScrollerClassName()} style={{ scrollbarWidth: 'thin' }}>
-          <div className={paperContentShellClassName()}>
+        <div
+          ref={scrollerRef}
+          className={readerMode === 'pdf' && !editMode ? 'flex-1 min-w-0 max-w-full overflow-auto bg-[#EDE8E0]' : paperScrollerClassName()}
+          style={{ scrollbarWidth: 'thin' }}
+        >
+          <div className={readerMode === 'pdf' && !editMode ? 'w-full max-w-full px-3 md:px-5 py-3 md:py-4 relative' : paperContentShellClassName()}>
             {editMode ? (
               <div className="flex flex-col gap-4">
                 <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-50 border border-amber-200 text-amber-800 text-sm">
@@ -867,6 +909,21 @@ export function PaperReader({
                   onChange={e => setEditContent(e.target.value)}
                   className="w-full min-h-[60vh] p-4 rounded-lg border border-[#1E1C1A]/15 focus:border-[#3B3094] focus:outline-none bg-[#FDFAF6] text-[#1E1C1A] resize-y"
                   style={{ fontFamily: 'var(--mono-font)', fontSize: '0.8125rem', lineHeight: 1.6 }}
+                />
+              </div>
+            ) : readerMode === 'pdf' && hasPdfSource ? (
+              <div className="relative min-w-0 w-full overflow-visible" ref={contentRef} onClick={handleContentClick}>
+                <PdfReader
+                  paper={paper}
+                  version={readerPayload?.version}
+                  sourceUrl={pdfSourceUrl}
+                  annotations={paperAnnotations}
+                  currentUser={currentUser}
+                  onSaveAnnotation={onSaveAnnotation}
+                  onDeleteAnnotation={onDeleteAnnotation}
+                  onAskAI={openAIWithText}
+                  t={t}
+                  lang={lang}
                 />
               </div>
             ) : (
@@ -1023,7 +1080,7 @@ export function PaperReader({
 
                 {/* ── SVG connectors: elbow lines from annotation → bubble ── */}
                 {/* SVG is inside contentRef so all coords share the same reference frame */}
-                <svg
+                {readerMode === 'html' && <svg
                   className="absolute inset-0 pointer-events-none hidden md:block"
                   style={{ width: '100%', height: '100%', overflow: 'visible' }}
                 >
@@ -1056,10 +1113,10 @@ export function PaperReader({
                       </g>
                     );
                   })}
-                </svg>
+                </svg>}
 
                 {/* ── Note bubbles: also inside contentRef for correct top/left coords ── */}
-                {paperAnnotations.filter(a => a.type === 'note' && a.note).map(ann => {
+                {readerMode === 'html' && paperAnnotations.filter(a => a.type === 'note' && a.note).map(ann => {
                   const pos = bubblePositions[ann.id];
                   if (!pos) return null;
                   const isOpen = expandedBubbleId === ann.id;

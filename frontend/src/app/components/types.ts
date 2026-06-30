@@ -22,6 +22,8 @@ export interface Paper {
   status: 'published' | 'processing' | 'blocked' | 'error' | 'ready';
   tags: string[];
   source?: 'arxiv' | 'pdf';
+  source_url?: string;
+  pdf_url?: string;
   arxivId?: string;
   htmlContent?: string;
   uploadedBy?: string;
@@ -59,6 +61,8 @@ export interface AnnotationTarget {
   quote_exact: string;
   quote_prefix?: string;
   quote_suffix?: string;
+  page_idx?: number;
+  rects?: Array<{ page_idx?: number; x: number; y: number; width: number; height: number }>;
   selector?: Record<string, unknown>;
 }
 

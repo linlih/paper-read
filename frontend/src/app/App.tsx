@@ -164,12 +164,26 @@ export default function App() {
     const updated = annotations.map(a => a.id === ann.id ? ann : a);
     setAnnotations(updated);
     save(STORAGE_KEYS.annotations, updated);
+    api<{ annotation: Annotation }>(`/api/annotations/${ann.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        type: ann.type,
+        color: ann.color,
+        body: ann.note || ann.body || '',
+        translation: ann.translation || '',
+      }),
+    }).catch(() => {
+      // Keep the local edit visible if persistence is temporarily unavailable.
+    });
   }
 
   function handleDeleteAnnotation(id: string) {
     const updated = annotations.filter(a => a.id !== id);
     setAnnotations(updated);
     save(STORAGE_KEYS.annotations, updated);
+    api<{ ok: true }>(`/api/annotations/${id}`, { method: 'DELETE' }).catch(() => {
+      // Local removal still keeps the current reading session uncluttered.
+    });
   }
 
   function handleUpdatePaperContent(paperId: string, html: string) {
